@@ -17,7 +17,7 @@ page_data = {}
 cached_search_results = {}
 downloaded_files_cache = {}
 CACHE_DB_FILE = 'telegram_bot_cache.json'
-DOWNLOAD_DIR = "/home/ubuntu/botx/"
+DOWNLOAD_DIR = "/path/to/file/"
 
 def load_cache():
     try:
