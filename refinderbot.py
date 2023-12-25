@@ -17,7 +17,7 @@ page_data = {}
 cached_search_results = {}
 downloaded_files_cache = {}
 CACHE_DB_FILE = 'telegram_bot_cache.json'
-DOWNLOAD_DIR = "/path/to/dir/"
+DOWNLOAD_DIR = "/home/ubuntu/botx/"
 
 def load_cache():
     try:
@@ -42,6 +42,43 @@ def save_cache():
 
 # Загрузка кэша при старте бота
 load_cache()
+
+#  истории запросов
+def log_to_json(user_login, keywords):
+    log_entry = {
+        'timestamp': datetime.utcnow().isoformat(),  # Текущее время в формате ISO
+        'user_login': user_login,
+        'keywords': keywords
+    }
+
+    # Путь к файлу лога
+    log_file_path = 'searchlogs.json'
+
+    # Загружаем предыдущие данные из файла, если он существует
+    try:
+        with open(log_file_path, 'r', encoding='utf-8') as log_file:
+            data = json.load(log_file)
+    except (FileNotFoundError, json.JSONDecodeError):
+        data = []
+
+    # Добавляем новую запись в данные
+    data.append(log_entry)
+
+    # Перезаписываем файл с новыми данными
+    with open(log_file_path, 'w', encoding='utf-8') as log_file:
+        json.dump(data, log_file, ensure_ascii=False, indent=4)
+        log_file.write('\n')  # Добавляем новую строку после записи массива
+        
+# Функция для проверки URL на YouTube
+def is_youtube_url(url):
+    youtube_regex = (
+        r'(https?://)?(www\.)?'
+        '(youtube|youtu|youtube-nocookie)\.(com|be)/'
+        '(watch\?v=|embed/|v/|.+\?v=)?([^&=%\?]{11})')
+    
+    youtube_match = re.match(youtube_regex, url)
+    return bool(youtube_match)
+
 
 def get_cached_search_results(keywords):
     # Получаем результаты из кэша, если они не устарели
@@ -118,8 +155,9 @@ def trim_or_compress_title(title, max_length=40):
         return title
     return compress_title(title)[:max_length-3] + '...'
 
-def search_music(keywords):
+def search_music(user_login, keywords):
     logging.info(f'Начинаем поиск музыки по ключевым словам: {keywords}')
+    log_to_json(user_login, keywords)
     cached_results = get_cached_search_results(keywords)
     if cached_results is not None:
         return cached_results
@@ -148,7 +186,8 @@ def search_music(keywords):
     cache_search_results(keywords, filtered_entries)
     return filtered_entries
 
-def download_and_convert_music(url):
+def download_and_convert_music(user_login, url):
+    log_to_json(user_login, url)
     rotate_files(DOWNLOAD_DIR)
     logging.info(f'Начинаем скачивание музыки по URL: {url}')
     cached_file_path, cached_url = get_cached_file_path(url)
@@ -207,13 +246,16 @@ def format_duration(seconds):
     return f"{minutes:02d}:{sec:02d}"
 
 def send_welcome(chat_id):
-    welcome_text = 'Привет! Для поиска музыки введите название трека.'
+    welcome_text = 'Привет! Для поиска музыки введите название или ссылку на трек.'
+    user_login = message.from_user.username
     bot.send_message(chat_id, welcome_text)
 
 @bot.message_handler(commands=['start'])
 def start(message):
+    # Здесь вызываем send_welcome с chat_id, полученным из сообщения
     send_welcome(message.chat.id)
-
+    
+    
 # Функция для отправки сообщений с результатами поиска
 def send_results_page(chat_id, results, page=1, results_per_page=5):
     total_pages = (len(results) + results_per_page - 1) // results_per_page
@@ -243,7 +285,9 @@ def send_results_page(chat_id, results, page=1, results_per_page=5):
 # функции обработчиков сообщений и коллбэков:
 @bot.message_handler(commands=['start'])
 def start(message):
+    user_login = message.from_user.username
     chat_id = message.chat.id
+    user_login = message.from_user.username
     # Приветственное сообщение для пользователя при активации бота командой /start
     send_welcome(chat_id)
 
@@ -253,23 +297,42 @@ def query_page(call):
     page_num = int(call.data.split('_')[1])
     chat_id = call.message.chat.id
     send_results_page(chat_id, requests[chat_id], page=page_num)
+    
+    #Отправка списка
 
 @bot.message_handler(content_types=['text'])
 def text(message):
+    user_login = message.from_user.username
     chat_id = message.chat.id
-    results = search_music(message.text)
-    if results:
-        requests[chat_id] = results
-        send_results_page(chat_id, results)  # Отправляем первую страницу результатов
+    keywords = message.text
+    log_to_json(user_login, keywords)
+
+    # Проверям, является ли текст сообщения ссылкой на YouTube
+    if is_youtube_url(keywords):
+        # Скачиваем и конвертируем музыку
+        file_path = download_and_convert_music(user_login, keywords)
+        if file_path:
+            # Если файл успешно скачан, отправляем музыку
+            send_music(chat_id, file_path)
+        else:
+            # Если возникла ошибка при скачивании
+            bot.send_message(chat_id, "Не удалось скачать трек.")
     else:
-        bot.send_message(chat_id, "К сожалению, ничего не найдено. Попробуйте другой запрос.")
+        # Иначе продолжаем выполнение обычного поиска
+        results = search_music(user_login, keywords)
+        if results:
+            requests[chat_id] = results
+            send_results_page(chat_id, results)  # Отправляем первую страницу результатов
+        else:
+            bot.send_message(chat_id, "К сожалению, ничего не найдено. Попробуйте другой запрос.")
 
 @bot.callback_query_handler(func=lambda call: call.data.startswith('download_'))
 def callback_query(call):
+    user_login = call.from_user.username
     chat_id = call.message.chat.id
     index = int(call.data.split('_')[1]) - 1  # Получаем индекс трека
     url = requests[chat_id][index]['webpage_url']  # Получаем URL для скачивания
-    file_path = download_and_convert_music(url)  # Скачиваем и конвертируем файл
+    file_path = download_and_convert_music(user_login, url)  # Скачиваем и конвертируем файл
 
     if file_path:  # Если файл успешно скачан
         send_music(chat_id, file_path)  # Отправляем музыку пользователю
